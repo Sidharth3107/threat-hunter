@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import boto3
-from config import ACCOUNT_ID, REGION
+from config import REGION
 
 from agent.run_agent import investigate
 

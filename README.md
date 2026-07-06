@@ -147,6 +147,8 @@ To productionize, the synthetic pieces would each be replaced by real data sourc
 | CloudTrail | Management events are free | $0 |
 | **Anthropic Claude Sonnet 4.6** | ~$0.05 per investigation | Variable |
 
+Prompt caching is enabled on the static prefix (system prompt + tool schemas): cache hits bill input at 10% of the normal rate, which matters because every investigation turn re-sends that prefix.
+
 At 100 investigations/day in production: **~$150/month**. Compare CrowdStrike at $25K+/month for an organization of that size.
 
 ---
@@ -157,7 +159,7 @@ The architectural pattern is proven end-to-end. To take it from working POC to r
 
 - **Realtime ML scoring path** — current realtime path uses EventBridge pattern rules only. Adding ML scoring to the realtime path needs a Lambda with sklearn + a DynamoDB table for per-user state (rolling burst counters).
 - **Real CloudTrail-derived baselines** — current baselines come from synthetic data; the production version would compute baselines from the most recent 30-90 days of actual CloudTrail history per IAM identity.
-- **Prompt injection hardening** — CloudTrail fields like `userAgent` can contain attacker-controlled text. Tools should sanitize/escape user-provided strings before they reach the model context.
+- **Prompt injection hardening** — CloudTrail fields like `userAgent` can contain attacker-controlled text. Event fields are length-capped and stripped of control characters before reaching the model, and the system prompt instructs the agent to treat them as data, not instructions — but full hardening (structured delimiting, output validation, an injection eval suite) is still needed for production.
 - **Retraining pipeline** — `pipelines/pipeline.py` is a stub. A real version would be a SageMaker Pipeline on a weekly schedule with model-registry promotion.
 - **Drift monitoring** — `monitoring/setup_monitor.py` is a stub. SageMaker Model Monitor would track feature distributions and alert when production drifts from training.
 - **Integration tests + agent eval set** — none exist. The first thing I'd build before deploying.
@@ -173,8 +175,7 @@ threat-hunter/
 ├── setup_aws.py                     # bucket, trail, IAM role
 ├── data/
 │   ├── generate_logs.py             # synthetic CloudTrail
-│   ├── feature_engineering.py       # parquet of engineered features
-│   └── inspect.py                   # CSV export for browsing
+│   └── feature_engineering.py       # parquet of engineered features
 ├── training/
 │   └── train.py                     # IsolationForest + diagnostics
 ├── agent/

@@ -30,12 +30,23 @@ def create_s3_bucket():
         }
     )
 
+    s3.put_public_access_block(
+        Bucket=BUCKET_NAME,
+        PublicAccessBlockConfiguration={
+            "BlockPublicAcls": True,
+            "IgnorePublicAcls": True,
+            "BlockPublicPolicy": True,
+            "RestrictPublicBuckets": True,
+        }
+    )
+
     print(f"Created S3 bucket: s3://{BUCKET_NAME}")
 
 
 def apply_cloudtrail_bucket_policy():
     s3 = boto3.client("s3")
 
+    trail_arn = f"arn:aws:cloudtrail:{REGION}:{ACCOUNT_ID}:trail/threat-hunter-trail"
     policy = {
         "Version": "2012-10-17",
         "Statement": [
@@ -44,7 +55,10 @@ def apply_cloudtrail_bucket_policy():
                 "Effect": "Allow",
                 "Principal": {"Service": "cloudtrail.amazonaws.com"},
                 "Action": "s3:GetBucketAcl",
-                "Resource": f"arn:aws:s3:::{BUCKET_NAME}"
+                "Resource": f"arn:aws:s3:::{BUCKET_NAME}",
+                "Condition": {
+                    "StringEquals": {"aws:SourceArn": trail_arn}
+                }
             },
             {
                 "Sid": "AWSCloudTrailWrite",
@@ -53,7 +67,10 @@ def apply_cloudtrail_bucket_policy():
                 "Action": "s3:PutObject",
                 "Resource": f"arn:aws:s3:::{BUCKET_NAME}/{CLOUDTRAIL_PREFIX}/AWSLogs/{ACCOUNT_ID}/*",
                 "Condition": {
-                    "StringEquals": {"s3:x-amz-acl": "bucket-owner-full-control"}
+                    "StringEquals": {
+                        "s3:x-amz-acl": "bucket-owner-full-control",
+                        "aws:SourceArn": trail_arn,
+                    }
                 }
             }
         ]
@@ -108,13 +125,28 @@ def create_sagemaker_role():
         Description="SageMaker execution role for Threat Hunter project"
     )
 
-    for policy_arn in [
-        "arn:aws:iam::aws:policy/AmazonSageMakerFullAccess",
-        "arn:aws:iam::aws:policy/AmazonS3FullAccess",
-        "arn:aws:iam::aws:policy/CloudWatchFullAccess",
-        "arn:aws:iam::aws:policy/AmazonBedrockFullAccess"
-    ]:
-        iam.attach_role_policy(RoleName=SAGEMAKER_ROLE_NAME, PolicyArn=policy_arn)
+    iam.attach_role_policy(
+        RoleName=SAGEMAKER_ROLE_NAME,
+        PolicyArn="arn:aws:iam::aws:policy/AmazonSageMakerFullAccess",
+    )
+
+    # S3 access is scoped to the project bucket only — never account-wide.
+    project_s3_policy = {
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
+            "Resource": [
+                f"arn:aws:s3:::{BUCKET_NAME}",
+                f"arn:aws:s3:::{BUCKET_NAME}/*",
+            ],
+        }],
+    }
+    iam.put_role_policy(
+        RoleName=SAGEMAKER_ROLE_NAME,
+        PolicyName="ThreatHunterProjectBucketAccess",
+        PolicyDocument=json.dumps(project_s3_policy),
+    )
 
     print(f"SageMaker role created: {SAGEMAKER_ROLE_ARN}")
 

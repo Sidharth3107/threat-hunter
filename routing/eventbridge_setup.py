@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 from config import ACCOUNT_ID, REGION
 
 QUEUE_NAME = "threat-hunter-investigations"
+DLQ_NAME = "threat-hunter-investigations-dlq"
 RULE_NAME = "threat-hunter-suspicious-cloudtrail"
 
 SENSITIVE_IAM_EVENTS = [
@@ -33,10 +34,31 @@ EVENT_PATTERN = {
 }
 
 
-def create_queue(sqs):
+def create_dlq(sqs):
+    try:
+        url = sqs.get_queue_url(QueueName=DLQ_NAME)["QueueUrl"]
+        print(f"DLQ already exists: {url}")
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "AWS.SimpleQueueService.NonExistentQueue":
+            raise
+        url = sqs.create_queue(
+            QueueName=DLQ_NAME,
+            Attributes={"MessageRetentionPeriod": "1209600"},
+        )["QueueUrl"]
+        print(f"Created DLQ: {url}")
+    return sqs.get_queue_attributes(
+        QueueUrl=url, AttributeNames=["QueueArn"]
+    )["Attributes"]["QueueArn"]
+
+
+def create_queue(sqs, dlq_arn):
+    # After 3 failed receives a message moves to the DLQ instead of looping
+    # forever — each retry would otherwise re-run a paid agent investigation.
+    redrive = json.dumps({"deadLetterTargetArn": dlq_arn, "maxReceiveCount": "3"})
     try:
         url = sqs.get_queue_url(QueueName=QUEUE_NAME)["QueueUrl"]
         print(f"Queue already exists: {url}")
+        sqs.set_queue_attributes(QueueUrl=url, Attributes={"RedrivePolicy": redrive})
         return url
     except ClientError as e:
         if e.response["Error"]["Code"] != "AWS.SimpleQueueService.NonExistentQueue":
@@ -48,6 +70,7 @@ def create_queue(sqs):
             "MessageRetentionPeriod": "345600",
             "VisibilityTimeout": "120",
             "ReceiveMessageWaitTimeSeconds": "20",
+            "RedrivePolicy": redrive,
         },
     )
     print(f"Created queue: {resp['QueueUrl']}")
@@ -101,7 +124,8 @@ def main():
     sqs = boto3.client("sqs", region_name=REGION)
     events = boto3.client("events", region_name=REGION)
 
-    queue_url = create_queue(sqs)
+    dlq_arn = create_dlq(sqs)
+    queue_url = create_queue(sqs, dlq_arn)
     queue_arn_val = queue_arn(ACCOUNT_ID, REGION, QUEUE_NAME)
 
     rule_arn = create_rule_and_target(events, queue_arn_val)
